@@ -1,0 +1,83 @@
+# The Xcode project's source of truth. Generate it with `xcodegen generate`; the generated
+# Audiopapers.xcodeproj isn't checked in.
+name: Audiopapers
+options:
+  bundleIdPrefix: com.audiopapers
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  AudiopapersKit:
+    path: .
+  onnxruntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager
+    exactVersion: 1.24.2
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Python's support package has one slice per architecture, and install_python copies by ARCHS.
+    ARCHS: arm64
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+targets:
+  Audiopapers:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.audiopapers.ios
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Audiopapers
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.audiopapers.ios.job.*
+        NSMicrophoneUsageDescription: Audiopapers listens for your questions and notes, and for "Hey Albert" while a paper is open. Nothing leaves the phone until you've said it.
+        NSSpeechRecognitionUsageDescription: Audiopapers turns what you say to it into text, on the phone where it can.
+        ITSAppUsesNonExemptEncryption: false
+    dependencies:
+      - package: AudiopapersKit
+      - package: onnxruntime
+        product: onnxruntime
+    postCompileScripts:
+      - name: Install Python and audiopapers_core
+        basedOnDependencyAnalysis: false
+        script: |
+          "$PROJECT_DIR/scripts/install-python.sh"
+  AudiopapersTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/AppTests
+    dependencies:
+      - target: Audiopapers
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Audiopapers:
+    build:
+      targets:
+        Audiopapers: all
+        AudiopapersTests: [test]
+    test:
+      targets:
+        - AudiopapersTests

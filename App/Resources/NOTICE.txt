@@ -1,0 +1,13 @@
+Models used to detect "Hey Albert" (see audio/WakeDetector.kt)
+
+hey_albert.onnx
+  Trained for this app with scripts/train_wake_word.py in the audiopapers repository, on synthetic
+  speech from Piper voices and on negative features from openWakeWord's training data
+  (https://huggingface.co/datasets/davidscripka/openwakeword_features), which is licensed
+  CC BY-NC-SA 4.0. It's distributed under the same terms:
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+melspectrogram.onnx, embedding_model.onnx
+  From openWakeWord (https://github.com/dscripka/openWakeWord), Apache License 2.0. The embedding
+  model is Google's speech_embedding (https://tfhub.dev/google/speech_embedding/1), Apache
+  License 2.0. Downloaded at build time.

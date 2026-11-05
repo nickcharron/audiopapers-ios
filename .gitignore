@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+# Fetched by scripts/bootstrap.sh, not checked in.
+Frameworks/Python.xcframework
+App/Resources/Fetched/

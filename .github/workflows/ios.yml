@@ -1,0 +1,53 @@
+name: iOS
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # AudiopapersKit's tests with the real core and wake word models, and the app type-checked against
+  # stand-ins for Apple's frameworks. Quick, and the only place the Kit's own tests run.
+  linux-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: audiopapers-ios
+      - uses: actions/checkout@v4
+        with:
+          repository: nickcharron/audiopapers
+          token: ${{ secrets.AUDIOPAPERS_REPO_TOKEN }}
+          path: audiopapers
+      - name: Fetch what isn't checked in
+        working-directory: audiopapers-ios
+        run: scripts/bootstrap.sh
+      - name: Test the Kit
+        working-directory: audiopapers-ios
+        run: scripts/test-linux.sh
+      - name: Type-check the app
+        working-directory: audiopapers-ios
+        run: scripts/typecheck-linux.sh
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: audiopapers-ios
+      # The app bundles audiopapers_core from the main repo. It's private, so this needs a token
+      # with read access to it, in a secret called AUDIOPAPERS_REPO_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          repository: nickcharron/audiopapers
+          token: ${{ secrets.AUDIOPAPERS_REPO_TOKEN }}
+          path: audiopapers
+      - name: Fetch what isn't checked in, and generate the project
+        working-directory: audiopapers-ios
+        run: |
+          brew install xcodegen
+          scripts/bootstrap.sh
+      - name: Build and test the app, on a simulator
+        working-directory: audiopapers-ios
+        run: |
+          set -o pipefail
+          xcodebuild test -project Audiopapers.xcodeproj -scheme Audiopapers \
+            -destination 'platform=iOS Simulator,name=iPhone 16' | tail -80
