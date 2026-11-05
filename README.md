@@ -80,4 +80,4 @@ the standard library. When you add a call, add it to
 - Check how the Albert, Describe and Skip buttons look on the lock screen.
 - Measure how long Kokoro's phonemizer takes on a phone, and move it to Swift if it's slow.
 - Move Android onto the shared versions of the code it still has in Kotlin.
-- Host the Kokoro archive somewhere upstream can't replace it.
+- Consider copying the Kokoro files to a public release of your own, so they can't disappear.

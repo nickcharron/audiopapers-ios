@@ -57,13 +57,15 @@ public enum Voice: Equatable, Sendable {
     }
 }
 
-/// The on-device Kokoro voice model's files: downloaded once from sherpa-onnx's GitHub release (no
-/// server of ours involved), checked against a known SHA-256, and unpacked into the app's private
-/// storage by audiopapers_core.
+/// The on-device Kokoro voice model's files: downloaded once from one fixed commit of its Hugging
+/// Face repo (no server of ours involved), checked against known SHA-256s, and moved into the app's
+/// private storage by audiopapers_core.
 public enum KokoroModel {
     public static var info: KokoroModelInfo { Core.catalog.kokoroModel }
     public static var dir: URL { Core.paths.kokoroRoot.appendingPathComponent(info.name) }
     public static var isInstalled: Bool { FileManager.default.fileExists(atPath: dir.appendingPathComponent("ready").path) }
+    /// Where the files wait until all of them are here.
+    public static var downloads: URL { Core.paths.kokoroRoot.appendingPathComponent("downloading") }
 
     public static func delete() {
         try? FileManager.default.removeItem(at: Core.paths.kokoroRoot)

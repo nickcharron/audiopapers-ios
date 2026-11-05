@@ -259,7 +259,7 @@ final class SettingsModel {
                 }
             }
             let bytes = total
-            await MainActor.run { self?.audioCacheBytes = bytes }
+            await MainActor.run { [weak self] in self?.audioCacheBytes = bytes }
         }
     }
 }

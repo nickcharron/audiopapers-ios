@@ -88,4 +88,21 @@ final class CoreTests: XCTestCase {
     func testStableHashIsStable() {
         XCTAssertEqual(stableHash("hello"), "4f9f2cab")
     }
+
+    func testAKokoroDownloadThatDoesntMatchItsHashIsRefused() async throws {
+        let downloads = FileManager.default.temporaryDirectory.appendingPathComponent("kokoro-\(UUID().uuidString)")
+        try ensureDirectory(downloads)
+        defer { try? FileManager.default.removeItem(at: downloads) }
+        XCTAssertEqual(KokoroModel.info.files.count, 6)
+        for file in KokoroModel.info.files {
+            try Data("not the model".utf8).write(to: downloads.appendingPathComponent(file.name))
+        }
+        do {
+            try await Core.kokoroInstall(downloads: downloads)
+            XCTFail("Should have thrown")
+        } catch let error as CoreError {
+            XCTAssertTrue(error.message.contains("checksum"), error.message)
+        }
+        XCTAssertFalse(KokoroModel.isInstalled)
+    }
 }

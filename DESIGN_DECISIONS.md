@@ -7,7 +7,7 @@ and what it would take to change.
 
 1. [Python runs inside the app](#1-python-runs-inside-the-app): the biggest architectural choice.
 2. [What's different from Android](#10-whats-different-from-android): a few features couldn't carry over.
-3. [Kokoro's checksum was re-pinned](#8-kokoros-checksum-was-re-pinned): this also found a live Android bug.
+3. [Kokoro downloads from a fixed commit](#8-kokoro-downloads-from-a-fixed-commit): this also changes Android.
 4. [Android still has its own copies of the shared code](#3-whats-shared-and-what-isnt).
 5. [Nothing has run on an Apple device yet](#12-whats-been-checked-and-what-hasnt).
 
@@ -124,7 +124,7 @@ also the riskiest audio code, and the part most likely to need tuning on a real 
 | Kokoro download through `HttpURLConnection`, in a worker | Background `URLSession` | iOS finishes it even if the app is suspended. |
 
 Smaller choices:
-- Rendered speech is excluded from iCloud backup.
+- Rendered speech and the Kokoro model are excluded from iCloud backup.
 - Python's bytecode cache goes in Caches, since the app bundle is read-only.
 - HTTPS uses a bundled `cacert.pem` via `SSL_CERT_FILE`, because embedded Python can't reach the
   system's certificates. Certificates only update with an app update, so bump certifi in
@@ -132,31 +132,36 @@ Smaller choices:
 - Reader dialogs are sheets, not alerts, because that's how iOS usually presents these.
 - Voice names are shown in Settings, since iOS exposes them.
 
-### 8. Kokoro's checksum was re-pinned
+### 8. Kokoro downloads from a fixed commit
 
-**What happened:** the archive Android pins (`4c30…`, 132,303,094 bytes, verified 2026-10-25) is no longer
-what's on GitHub. The project replaced it on 2026-10-26 with `72c3…` (132,353,410 bytes).
+**What happened:** the archive Android pinned on GitHub (`4c30…`, 132 MB) was replaced by its maintainer on
+2026-10-26, when a 54th voice was added. A release file on GitHub can be replaced at any time, so the pinned
+hash stopped matching and fresh Android downloads should have started failing.
 
-**Chosen:** `catalog.json` now pins `72c3…`. This is what iOS uses. Android's own pin is unchanged.
+**Chosen:** both apps now download the six English files one by one from the same maintainer's Hugging Face
+repo, at one fixed commit (`57adb37`), each checked against its own SHA-256. `catalog.json` has the list for
+iOS, and `KokoroModel.kt` has its own copy.
 
-**Why I think it's legitimate:**
-- GitHub's API reports the same digest as my two separate downloads.
-- The asset's uploader is `csukuangfj`, the account shown on the release asset.
-- The archive's README says a 54th voice was added and IDs 0–52 are unchanged. The size of `voices.bin`
-  is exactly 54 voices.
+**Why this and not "accept whatever's newest":**
+- Voices are looked up by number. If a voice were ever removed, later IDs could shift, and accepting the
+  newest upload could play the wrong voice with no error. A fixed commit can't change, so upstream can add or
+  remove voices and the app won't notice.
+- New voices only arrive when someone chooses to move the pin. The steps are in `audiopapers_core/kokoro.py`.
+- Phones that already have the model keep it. Its voice IDs are the same, and nothing reinstalls.
 
-**What I couldn't do:** compare it against the old archive, since no copy was left. So this rests on
-GitHub's record and the explanation above, not on a byte comparison.
+**Evidence:** the files at that commit have the same hashes as the GitHub archive I tested, whose digest
+matched GitHub's own record. All 25 catalog voice IDs match `speaker2id` in the model's metadata. I couldn't
+compare against the older `4c30…` archive, as no copy was left.
 
-**The Android bug this found:** `KokoroModel.kt` still expects `4c30…`, so a fresh Kokoro download on
-Android should now fail with "The downloaded voice didn't match its expected checksum". That's from
-reading the code and the hashes, not from running it on a phone. Phones that already have the model
-aren't affected. The fix is one line plus a release. I left it for you to decide, as it's outside this
-work.
+**Cost:**
+- The download is 155 MB rather than 132 MB, because the files aren't compressed.
+- One more host in the chain. Android also loses its `commons-compress` dependency, which only unpacked the
+  archive.
 
-**Longer term:** the app depends on a release file someone else can replace at any time, and when that
-happens this feature breaks with no warning. Copying the archive to a release in your own GitHub repo
-would stop that, and it's still free and serverless.
+**What's still exposed:** if the maintainer deletes the repo or rewrites its history, downloads fail with a
+clear error, for new installs only. It can't cause a wrong voice. Copying the six files to a public GitHub
+release of your own would remove that too, and changing the source would then be a one-line edit. Your repos
+are private, so it would need a new public one. I haven't done this, since publishing is your call.
 
 ### 9. Project and tooling
 
@@ -211,7 +216,8 @@ thing.
   `scripts/train_wake_word.py`. The models ran in Python's ONNX Runtime, not the iOS one.
 - The shared core on Python 3.10 and 3.13.
 - HTTPS with the bundled certificates on 3.13, reaching Gemini.
-- The real Kokoro archive installing. The phonemizer's output is byte-identical to Kotlin's on real word
+- The real Kokoro files downloading from the pinned commit and installing, through both the Python
+  installer and Android's Kotlin one running on a laptop JVM, with identical results. The phonemizer's output is byte-identical to Kotlin's on real word
   lists, in US and British English, across five tricky test passages.
 - Kokoro rendering speech from the same inputs the Swift code sends, in Python's ONNX Runtime. I checked
   duration and level, and didn't listen to it.

@@ -66,7 +66,7 @@ func sleepMs(_ milliseconds: Int64) async throws {
 }
 
 /// A file with its folders made first.
-func ensureDirectory(_ url: URL) {
+public func ensureDirectory(_ url: URL) {
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 }
 
@@ -91,7 +91,7 @@ func moveIntoPlace(_ temporary: URL, _ file: URL) throws {
 }
 
 /// Rendered speech can be made again, so it's no use taking up someone's backup.
-func excludeFromBackup(_ directory: URL) {
+public func excludeFromBackup(_ directory: URL) {
     var url = directory
     var values = URLResourceValues()
     values.isExcludedFromBackup = true

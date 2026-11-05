@@ -52,19 +52,19 @@ final class AudioHub: PlayerBackend {
         attachNodes()
 
         let center = NotificationCenter.default
-        center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+        _ = center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
             let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init)
             MainActor.assumeIsolated { self?.onInterruption(type, shouldResume: options?.contains(.shouldResume) == true) }
         }
-        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+        _ = center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
             let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).flatMap(AVAudioSession.RouteChangeReason.init)
             MainActor.assumeIsolated {
                 // Headphones or Bluetooth went away: don't carry on out loud from the speaker.
                 if reason == .oldDeviceUnavailable { self?.pause() }
             }
         }
-        center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+        _ = center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
             let changed = note.object as AnyObject?
             MainActor.assumeIsolated {
                 if let self, changed === self.engine { self.onConfigurationChange() }
@@ -249,7 +249,7 @@ final class AudioHub: PlayerBackend {
     /// Made outside the main actor, since the player node calls this on its own thread.
     private nonisolated static func completion(hub: AudioHub, generation: Int) -> AVAudioPlayerNodeCompletionHandler {
         { [weak hub] _ in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak hub] in
                 MainActor.assumeIsolated {
                     guard let hub, hub.generation == generation else { return }
                     hub.itemFinished()

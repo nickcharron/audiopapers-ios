@@ -40,7 +40,7 @@ final class KeychainSecrets: SecretStore, @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: name,
         ]
-        SecItemDelete(query as CFDictionary)
+        _ = SecItemDelete(query as CFDictionary)
         guard let data = value?.data(using: .utf8) else { return }
         var item = query
         item[kSecValueData as String] = data

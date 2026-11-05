@@ -15,12 +15,17 @@ public struct GeminiVoice: Codable, Equatable, Identifiable, Sendable {
     public var id: String { name }
 }
 
+public struct KokoroModelFile: Codable, Equatable, Sendable {
+    public var name: String
+    public var size: Int64
+    public var sha256: String
+}
+
 public struct KokoroModelInfo: Codable, Equatable, Sendable {
     public var name: String
     public var downloadMb: Int
-    public var url: String
-    public var sha256: String
-    public var keep: [String]
+    public var baseUrl: String
+    public var files: [KokoroModelFile]
 }
 
 public struct ListenTimes: Codable, Equatable, Sendable {

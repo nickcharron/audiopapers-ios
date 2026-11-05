@@ -10,8 +10,8 @@ enum KokoroDownload: Equatable {
     case failed(String)
 }
 
-/// Downloads the Kokoro voice model with a background URLSession, so it finishes if the app is
-/// left. Once it's here, audiopapers_core checks it against its hash and unpacks it.
+/// Downloads the Kokoro voice model's files with a background URLSession, so it finishes if the app
+/// is left. Once they're all here, audiopapers_core checks them against their hashes and installs them.
 @MainActor
 @Observable
 final class KokoroDownloader: NSObject {
@@ -24,6 +24,9 @@ final class KokoroDownloader: NSObject {
     @ObservationIgnored var backgroundCompletion: (() -> Void)?
     @ObservationIgnored private var session: URLSession!
     @ObservationIgnored private var delegateBridge: DownloadDelegate?
+    /// Bytes so far of each file that's downloading.
+    @ObservationIgnored private var received: [String: Int64] = [:]
+    @ObservationIgnored private var installing = false
 
     override init() {
         super.init()
@@ -41,16 +44,25 @@ final class KokoroDownloader: NSObject {
         session.getAllTasks { tasks in
             if !tasks.isEmpty {
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self.state = .running(done: 0, total: -1) }
+                    MainActor.assumeIsolated { self.progress(file: nil, done: 0) }
                 }
             }
         }
     }
 
     func start() {
-        guard let url = URL(string: KokoroModel.info.url) else { return }
-        state = .running(done: 0, total: -1)
-        session.downloadTask(with: url).resume()
+        let info = KokoroModel.info
+        received = [:]
+        try? FileManager.default.removeItem(at: KokoroModel.downloads)
+        ensureDirectory(KokoroModel.downloads)
+        excludeFromBackup(Core.paths.kokoroRoot)
+        progress(file: nil, done: 0)
+        for file in info.files {
+            guard let url = URL(string: info.baseUrl + file.name) else { continue }
+            let task = session.downloadTask(with: url)
+            task.taskDescription = file.name
+            task.resume()
+        }
     }
 
     func cancelAndDelete(speech: Speech) {
@@ -63,23 +75,40 @@ final class KokoroDownloader: NSObject {
         }
     }
 
-    fileprivate func progress(done: Int64, total: Int64) {
-        state = .running(done: done, total: total)
+    /// Files already here count in full, including ones from before the app was last stopped.
+    fileprivate func progress(file: String?, done: Int64) {
+        if let file { received[file] = done }
+        let files = KokoroModel.info.files
+        let finished = files.filter { FileManager.default.fileExists(atPath: KokoroModel.downloads.appendingPathComponent($0.name).path) }
+        let finishedBytes = finished.reduce(Int64(0)) { $0 + $1.size }
+        let partialBytes = files.filter { !finished.contains($0) }.reduce(Int64(0)) { $0 + (received[$1.name] ?? 0) }
+        state = .running(done: finishedBytes + partialBytes, total: files.reduce(Int64(0)) { $0 + $1.size })
     }
 
+    /// One failed file fails the download: the others would only be thrown away.
     fileprivate func failed(_ message: String) {
+        session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
         state = .failed("Couldn't download the voice: \(message)")
     }
 
-    fileprivate func downloaded(_ archive: URL) {
-        let grace = UIApplication.shared.beginBackgroundTask(withName: "Unpacking the voice", expirationHandler: nil)
+    fileprivate func fileArrived() {
+        let manager = FileManager.default
+        let allHere = KokoroModel.info.files.allSatisfy { manager.fileExists(atPath: KokoroModel.downloads.appendingPathComponent($0.name).path) }
+        guard allHere else {
+            progress(file: nil, done: 0)
+            return
+        }
+        guard !installing else { return }
+        installing = true
+        let grace = UIApplication.shared.beginBackgroundTask(withName: "Installing the voice", expirationHandler: nil)
         Task {
             defer {
-                try? FileManager.default.removeItem(at: archive)
+                installing = false
+                try? FileManager.default.removeItem(at: KokoroModel.downloads)
                 UIApplication.shared.endBackgroundTask(grace)
             }
             do {
-                try await Core.kokoroInstall(archive: archive)
+                try await Core.kokoroInstall(downloads: KokoroModel.downloads)
                 state = .idle
                 installs += 1
             } catch let error as CoreError {
@@ -111,18 +140,22 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        onMain { $0.progress(done: totalBytesWritten, total: totalBytesExpectedToWrite) }
+        let file = downloadTask.taskDescription
+        onMain { $0.progress(file: file, done: totalBytesWritten) }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         // The file only stays there until this returns.
-        let kept = FileManager.default.temporaryDirectory.appendingPathComponent("kokoro-\(UUID().uuidString).tar.bz2")
         do {
             if let response = downloadTask.response as? HTTPURLResponse, response.statusCode != 200 {
                 throw SpeechFailure("HTTP \(response.statusCode)")
             }
+            guard let name = downloadTask.taskDescription else { throw SpeechFailure("A file had no name") }
+            let kept = KokoroModel.downloads.appendingPathComponent(name)
+            ensureDirectory(KokoroModel.downloads)
+            try? FileManager.default.removeItem(at: kept)
             try FileManager.default.moveItem(at: location, to: kept)
-            onMain { $0.downloaded(kept) }
+            onMain { $0.fileArrived() }
         } catch {
             let message = error.localizedDescription
             onMain { $0.failed(message) }

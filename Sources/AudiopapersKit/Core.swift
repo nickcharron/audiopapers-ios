@@ -235,8 +235,8 @@ public enum Core {
 
     public static func kokoroRelease() async throws { try await run("kokoro_release", []) }
 
-    public static func kokoroInstall(archive: URL) async throws {
-        try await run("kokoro_install", [archive.path, paths.kokoroRoot.path])
+    public static func kokoroInstall(downloads: URL) async throws {
+        try await run("kokoro_install", [downloads.path, paths.kokoroRoot.path])
     }
 
     // MARK: - Calling Python

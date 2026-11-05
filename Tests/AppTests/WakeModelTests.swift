@@ -55,9 +55,9 @@ final class EmbeddedPythonTests: XCTestCase {
     }
 
     func testPythonsBinaryModulesLoad() async throws {
-        // Checking an archive's hash needs hashlib, reached by trying to open one that isn't there.
+        // Checking a file's hash needs hashlib, reached by trying to open one that isn't there.
         do {
-            try await Core.kokoroInstall(archive: URL(fileURLWithPath: "/no/such/file"))
+            try await Core.kokoroInstall(downloads: URL(fileURLWithPath: "/no/such/folder"))
             XCTFail("Should have thrown")
         } catch let error as CoreError {
             XCTAssertEqual(error.type, "network") // an OSError: it got as far as opening the file

@@ -61,7 +61,7 @@ final class NowPlaying {
             commands.dislikeCommand.isEnabled = prompting
             commands.bookmarkCommand.isEnabled = voice.handsFree
         } onChange: { [weak self] in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated { self?.followPrompts() }
             }
         }
