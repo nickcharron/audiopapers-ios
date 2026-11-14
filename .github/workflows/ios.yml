@@ -3,6 +3,8 @@ name: iOS
 on:
   push:
   pull_request:
+  # Adds a "Run workflow" button on the Actions tab.
+  workflow_dispatch:
 
 jobs:
   # AudiopapersKit's tests with the real core and wake word models, and the app type-checked against
