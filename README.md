@@ -4,8 +4,9 @@ The iPhone version of Audiopapers, made to match [audiopapers-android](https://g
 It reads research papers aloud, and you can ask about them, take notes and control it by voice with "Hey
 Albert". It's free and has no server: everything runs on the phone with your own Gemini key.
 
-**Status: first version, never built on a Mac.** The code has been tested and type-checked on Linux only.
-Expect to fix some compile errors on the first build, and to tune the audio on a real phone. See
+**Status: first version, not yet run on an iPhone.** It builds on GitHub's macOS runners and passes its
+simulator tests, but the microphone, echo cancelling, background listening and the lock screen still need
+a real phone. See
 [What's been checked](DESIGN_DECISIONS.md#12-whats-been-checked-and-what-hasnt).
 
 [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) explains the choices behind it and how it differs from Android.
@@ -46,6 +47,20 @@ scripts/typecheck-linux.sh   # type-checks App/ against stand-ins for Apple's fr
 
 The type-check catches mistakes in our own code, not misuse of Apple's APIs. When you use a new Apple API
 in `App/`, add it to `Tools/AppleStubs`.
+
+## Releasing
+
+```bash
+scripts/release.sh 0.2
+```
+
+This bumps the version in `project.yml`, commits, tags this repo `v0.2`, tags the `audiopapers` commit
+the core comes from `ios-0.2`, and pushes both. Both repos have to be committed and in step with GitHub
+first. Then, on a Mac with both repos at those tags, run `xcodegen generate` and archive it in Xcode
+(**Product → Archive**).
+
+Settings shows which core commit a build has, for example "Audiopapers 0.2 (core 244d57f)". It says
+`-dirty` if the core had uncommitted changes when it was built.
 
 ## How it fits together
 

@@ -23,3 +23,11 @@ done
 
 mkdir -p "$CODESIGNING_FOLDER_PATH/app"
 rsync -a --delete --exclude '__pycache__' "$core_repo/audiopapers_core/" "$CODESIGNING_FOLDER_PATH/app/audiopapers_core/"
+
+# Which audiopapers commit the core came from, shown beside the version in Settings, so any
+# installed build can be traced back to its core. "-dirty" if the core had uncommitted changes.
+core_commit="$(git -C "$core_repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git -C "$core_repo" status --porcelain -- audiopapers_core 2>/dev/null)" ]; then
+    core_commit="$core_commit-dirty"
+fi
+echo "$core_commit" > "$CODESIGNING_FOLDER_PATH/app/core_commit.txt"

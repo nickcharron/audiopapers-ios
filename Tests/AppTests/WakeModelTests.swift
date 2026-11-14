@@ -54,6 +54,12 @@ final class EmbeddedPythonTests: XCTestCase {
         XCTAssertNotNil(papers)
     }
 
+    func testTheBuildRecordsWhichCoreCommitItHas() throws {
+        let file = Bundle.main.bundleURL.appendingPathComponent("app/core_commit.txt")
+        let commit = try String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertNotNil(commit.range(of: "^[0-9a-f]{7,}(-dirty)?$", options: .regularExpression), commit)
+    }
+
     func testPythonsBinaryModulesLoad() async throws {
         // Checking a file's hash needs hashlib, reached by trying to open one that isn't there.
         do {

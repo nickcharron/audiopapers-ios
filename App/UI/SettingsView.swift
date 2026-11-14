@@ -303,6 +303,11 @@ private struct SettingsContent: View {
 
     private var downloader: KokoroDownloader { services.kokoroDownloader }
     private var kokoroMb: Int { KokoroModel.info.downloadMb }
+    /// Which audiopapers commit the core came from, written by scripts/install-python.sh.
+    private var coreCommit: String {
+        let file = Bundle.main.bundleURL.appendingPathComponent("app/core_commit.txt")
+        return (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+    }
     private var kokoroName: String { "Natural voice on this phone (Kokoro)" }
 
     var body: some View {
@@ -322,7 +327,7 @@ private struct SettingsContent: View {
                     .buttonStyle(.bordered)
                     .disabled(model.audioCacheBytes <= 0)
                 Section2("About")
-                Text("Audiopapers \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")").font(.caption)
+                Text("Audiopapers \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (core \(coreCommit))").font(.caption)
             }
             .padding(24)
         }

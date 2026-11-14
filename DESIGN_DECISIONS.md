@@ -9,7 +9,7 @@ and what it would take to change.
 2. [What's different from Android](#10-whats-different-from-android): a few features couldn't carry over.
 3. [Kokoro downloads from a fixed commit](#8-kokoro-downloads-from-a-fixed-commit): this also changes Android.
 4. [Android still has its own copies of the shared code](#3-whats-shared-and-what-isnt).
-5. [Nothing has run on an Apple device yet](#12-whats-been-checked-and-what-hasnt).
+5. [It hasn't run on a real iPhone yet](#12-whats-been-checked-and-what-hasnt).
 
 ## Architecture
 
@@ -206,9 +206,9 @@ a decision.
 
 ### 12. What's been checked and what hasn't
 
-**Nothing has been compiled against Apple's SDK or run on a simulator or device.** There's no Mac here.
-Expect some compile errors on the first build: the stand-ins are my reading of Apple's APIs, not the real
-thing.
+**It hasn't run on a real iPhone.** On 2026-11-14 it compiled first time on GitHub's macOS runners, and
+passed its simulator tests: Python inside the signed app, HTTPS with the bundled certificates, and the wake
+word models on iOS's ONNX Runtime matching the reference scores.
 
 **Checked on Linux, for real:**
 - All of `AudiopapersKit`'s tests, running the real Python core.
@@ -228,9 +228,7 @@ of Apple's APIs.
 **Never run, riskiest first:**
 1. Echo cancellation and `AudioHub` as a whole, including replacing the engine.
 2. Speech recognition continuing while the app is in the background.
-3. `install_python` packaging and Python starting inside a signed app.
-4. ONNX Runtime on iOS. `Tests/AppTests` covers this on a simulator.
-5. `BGContinuedProcessingTask`.
-6. Animated WebP mascots through `CGAnimateImageAtURLWithBlock`.
-7. XcodeGen output, including resources ending up at the bundle root.
-8. The CI workflow.
+3. `BGContinuedProcessingTask`.
+4. The Kokoro download and voice on a phone.
+5. Animated WebP mascots through `CGAnimateImageAtURLWithBlock`.
+6. How the lock screen buttons look.
