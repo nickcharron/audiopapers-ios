@@ -296,6 +296,89 @@ final class SpeechInputTests: XCTestCase {
         listen()
         XCTAssertEqual(failures, ["Speech recognition isn't available on this phone."])
     }
+
+    // MARK: Listening until "over"
+
+    private func listenUntilOver(onPause: ((String) -> Void)? = nil) {
+        input.listen(
+            mode: .question,
+            terms: [],
+            fromWake: false,
+            untilOver: onPause == nil,
+            onPause: onPause,
+            onPartial: { [self] in partials.append($0) },
+            onText: { [self] in texts.append($0) },
+            onFailure: { [self] in failures.append($0) },
+            onSayAgain: { [self] in sayAgains += 1 }
+        )
+    }
+
+    private func quiet() -> [Int16] { [Int16](repeating: 0, count: micFrameSamples) }
+
+    func testUntilOverCarriesOnWhenTheRecognizerStopsAtAPause() async throws {
+        listenUntilOver()
+        recognizer.onFinal?("what does the residual")
+        XCTAssertEqual(texts, [])
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        recognizer.onPartial?("block")
+        XCTAssertEqual(partials.last, "what does the residual block")
+        recognizer.onFinal?("block do over")
+        XCTAssertEqual(texts, ["what does the residual block do"])
+    }
+
+    func testOverHeardJustBeforeAPauseFinishesIt() async throws {
+        listenUntilOver()
+        recognizer.onPartial?("what is dropout over")
+        // Some quiet first, which the endpointer takes its noise floor from.
+        for _ in 0..<3 { mic.deliver(quiet()) }
+        for _ in 0..<5 { mic.deliver(loud()) }
+        for _ in 0..<12 { mic.deliver(quiet()) }
+        try await eventually("it to finish") { recognizer.sessions[0].ended }
+        recognizer.onFinal?("what is dropout over")
+        XCTAssertEqual(texts, ["what is dropout"])
+    }
+
+    func testAPauseWithoutOverKeepsListening() async throws {
+        listenUntilOver()
+        recognizer.onPartial?("what is dropout")
+        // Some quiet first, which the endpointer takes its noise floor from.
+        for _ in 0..<3 { mic.deliver(quiet()) }
+        for _ in 0..<5 { mic.deliver(loud()) }
+        for _ in 0..<12 { mic.deliver(quiet()) }
+        try await sleepMs(100)
+        XCTAssertFalse(recognizer.sessions[0].ended)
+        XCTAssertEqual(texts, [])
+        recognizer.onPartial?("what is dropout for over")
+        try await eventually("it to finish") { recognizer.sessions[0].ended }
+    }
+
+    func testAPauseAsksAndCanCarryOnUntilOver() async throws {
+        var asked: [String] = []
+        listenUntilOver { asked.append($0) }
+        recognizer.onFinal?("what is")
+        XCTAssertEqual(asked, ["what is"])
+        input.keepUntilOver()
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        recognizer.onFinal?("dropout over")
+        XCTAssertEqual(texts, ["what is dropout"])
+    }
+
+    func testAPauseAsksAndCanFinishThere() async throws {
+        listenUntilOver { [self] _ in input.stop() }
+        recognizer.onFinal?("next section over")
+        try await eventually("it to finish") { !texts.isEmpty }
+        // Not listening for "over", so it's left as it was said.
+        XCTAssertEqual(texts, ["next section over"])
+    }
+
+    func testFinishingEarlyKeepsWhatEarlierStretchesHeard() async throws {
+        listenUntilOver()
+        recognizer.onFinal?("what does figure three")
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        input.stop()
+        XCTAssertEqual(texts, ["what does figure three"])
+        XCTAssertTrue(recognizer.sessions[1].cancelled)
+    }
 }
 
 @MainActor
@@ -317,6 +400,8 @@ final class VoiceControllerTests: XCTestCase {
         try TestWorld.start()
         Settings.geminiKey = nil
         Settings.heyAlbert = true
+        // Most of these are about what's done with what was heard; see the "over" tests below.
+        Settings.sayOver = false
         Settings.askAboutFigures = true
         Settings.voiceEngine = .phone
         Settings.liveVoiceEngine = .phone
@@ -579,6 +664,73 @@ final class VoiceControllerTests: XCTestCase {
         _ = try await openPaper()
         voice.actAsIfHeard("next section")
         try await eventually("it to move") { player.currentId == "seg_1_0" }
+    }
+
+    // MARK: Saying "over", and waiting after an answer
+
+    func testWithOverOnACommandStillHappensAtThePause() async throws {
+        Settings.sayOver = true
+        _ = try await openPaper()
+        try await say("next section")
+        try await eventually("it to move") { player.currentId == "seg_1_0" }
+        XCTAssertFalse(earcons.played.contains("stillListening"))
+    }
+
+    func testWithOverOnANoteWaitsForOver() async throws {
+        Settings.sayOver = true
+        let id = try await openPaper()
+        try await say("note that the baseline")
+        try await eventually("it to keep listening") { voice.state.doneHint != nil }
+        XCTAssertEqual(voice.state.doneHint, "Say \"over\" when you're done with your note.")
+        XCTAssertEqual(earcons.played.last, "stillListening")
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        recognizer.onFinal?("looks wrong over")
+        try await eventually("it to be saved") { phone.rendered.last == "Noted." }
+        let removed = try await Core.deleteLastNote(id)
+        XCTAssertEqual(removed?.text, "the baseline looks wrong")
+    }
+
+    func testWithOverOnDictationWaitsForOver() async throws {
+        Settings.sayOver = true
+        let id = try await openPaper()
+        try await say("take a note")
+        try await eventually("Albert to answer") { player.currentId?.hasPrefix("say_") == true }
+        XCTAssertEqual(phone.rendered.last, "Go ahead. Say over when you're done.")
+        player.finishItem()
+        try await eventually("it to listen") { voice.state.isHearing }
+        XCTAssertEqual(voice.state.doneHint, "Say \"over\" when you're done with your note.")
+        recognizer.onFinal?("check the")
+        try await eventually("a new session") { recognizer.sessions.count == 3 }
+        recognizer.onFinal?("second table over")
+        try await eventually("it to be saved") { phone.rendered.last == "Noted." }
+        let removed = try await Core.deleteLastNote(id)
+        XCTAssertEqual(removed?.text, "check the second table")
+    }
+
+    func testAfterARecapOrSummaryContinueCarriesOnReading() async throws {
+        _ = try await openPaper()
+        engine.tell("Recap", "So far, residual networks.", voice: .phone, waits: true)
+        try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
+        player.finishItem()
+        try await eventually("it to wait") { engine.isWaitingAfterAside }
+        XCTAssertFalse(player.isPlaying)
+        try await say("continue")
+        try await eventually("narration back") { player.currentId == "seg_0_0" && player.isPlaying }
+        XCTAssertEqual(engine.interjectionState, .idle)
+    }
+
+    func testWhileWaitingNothingSaidLeavesItWaiting() async throws {
+        _ = try await openPaper()
+        engine.tell("Recap", "So far, residual networks.", voice: .phone, waits: true)
+        try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
+        player.finishItem()
+        try await eventually("it to wait") { engine.isWaitingAfterAside }
+        let spoken = phone.rendered.count
+        voice.pushToTalk()
+        recognizer.onFinal?(nil)
+        try await eventually("it to wait again") { engine.isWaitingAfterAside }
+        XCTAssertEqual(phone.rendered.count, spoken)
+        XCTAssertFalse(player.isPlaying)
     }
 }
 

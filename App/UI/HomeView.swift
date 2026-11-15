@@ -49,7 +49,7 @@ struct HomeView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if case .hearing(let words) = voice.state {
+            if case .hearing(let words, _) = voice.state {
                 Text(words.isEmpty ? "Listening..." : words).font(.caption)
             }
             MascotView(state: mascotState)

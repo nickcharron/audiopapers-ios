@@ -52,6 +52,9 @@ public final class SpeechEndpointer {
 
     public private(set) var heardSpeech = false
 
+    /// How loud it's been between words, to start the next one from.
+    public var floorDb: Float { noiseFloor }
+
     private let noSpeechFrames: Int
     private let endSilenceFrames: Int
     private let maxFrames: Int

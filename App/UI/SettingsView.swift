@@ -34,6 +34,7 @@ final class SettingsModel {
     var highlightSpoken = Settings.highlightSpoken
     var followSpoken = Settings.followSpoken
     var heyAlbert = Settings.heyAlbert
+    var sayOver = Settings.sayOver
     var wakeSensitivity = Settings.wakeSensitivity
     var micMode = Settings.micMode
     var hasKey = Settings.geminiKey != nil
@@ -125,6 +126,11 @@ final class SettingsModel {
         heyAlbert = on
         if on { services.input.forgetFailures() }
         services.voice.syncListening()
+    }
+
+    func set(sayOver on: Bool) {
+        Settings.sayOver = on
+        sayOver = on
     }
 
     func set(wakeSensitivity sensitivity: WakeSensitivity) {
@@ -542,6 +548,11 @@ private struct AlbertSettings: View {
             )
             Text("You can also press the Albert button, whether or not this is on. Try: next, go back, next section, go to the results, pause, faster, what's a residual block, note that the baseline looks wrong, remind me to read this, describe figure three, recap, read my notes. Say help for more.")
                 .font(.caption)
+            SettingSwitch(
+                title: "Say \"over\" to finish questions and notes",
+                detail: "Albert keeps listening through pauses while you work out how to put a question or a note, until you say over. Commands like faster or next section still happen as soon as you stop. If you forget, it finishes after 20 seconds of quiet.",
+                isOn: Binding(get: { model.sayOver }, set: { model.set(sayOver: $0) })
+            )
             Text("How easily it's set off").fontWeight(.semibold)
             Choice(selected: model.wakeSensitivity == .low, title: "Less often", detail: "If it goes off when you didn't say it.") {
                 model.set(wakeSensitivity: .low)

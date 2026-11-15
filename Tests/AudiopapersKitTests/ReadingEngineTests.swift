@@ -206,7 +206,7 @@ final class ReadingEngineTests: XCTestCase {
         player.currentPositionMs = 3_000
         engine.tell(ReadingEngine.shortReply, "Noted.", voice: .phone)
         try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
-        if case .telling(let title, let text, _, _) = engine.interjectionState {
+        if case .telling(let title, let text, _, _, _, _) = engine.interjectionState {
             XCTAssertEqual(title, ReadingEngine.shortReply)
             XCTAssertEqual(text, "Noted.")
         } else {
@@ -214,6 +214,23 @@ final class ReadingEngineTests: XCTestCase {
         }
 
         player.finishItem()
+        try await eventually("narration to come back") { player.currentId == "seg_0_0" && player.isPlaying }
+        XCTAssertEqual(player.currentPositionMs, 3_000)
+        XCTAssertEqual(engine.interjectionState, .idle)
+    }
+
+    func testARecapIsFollowedByWaitingNotNarration() async throws {
+        _ = try await openPaper()
+        player.currentPositionMs = 3_000
+        engine.tell("Recap", "So far, residual networks.", voice: .phone, waits: true)
+        try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
+        XCTAssertTrue(phone.rendered.last?.hasSuffix("Done. Waiting for your next instruction.") == true)
+        XCTAssertFalse(engine.isWaitingAfterAside)
+        player.finishItem()
+        try await eventually("it to wait") { engine.isWaitingAfterAside }
+        XCTAssertFalse(player.isPlaying)
+        // Play carries on with the paper, from where it was.
+        engine.togglePlayPause()
         try await eventually("narration to come back") { player.currentId == "seg_0_0" && player.isPlaying }
         XCTAssertEqual(player.currentPositionMs, 3_000)
         XCTAssertEqual(engine.interjectionState, .idle)

@@ -13,8 +13,8 @@ private let followSlack: CGFloat = 24
 private enum ReaderDialog: Identifiable, Equatable {
     case message(String)
     case prompt(PendingPrompt)
-    case answered(question: String, answer: String, answerId: String)
-    case telling(title: String, text: String, figureId: String?)
+    case answered(question: String, answer: String, answerId: String, done: Bool)
+    case telling(title: String, text: String, figureId: String?, done: Bool)
     case failed(String)
     case note
 
@@ -22,8 +22,8 @@ private enum ReaderDialog: Identifiable, Equatable {
         switch self {
         case .message(let text): return "message:\(text)"
         case .prompt(let prompt): return "prompt:\(prompt.label)"
-        case .answered(_, _, let answerId): return "answered:\(answerId)"
-        case .telling(let title, let text, _): return "telling:\(title):\(text.hashValue)"
+        case .answered(_, _, let answerId, _): return "answered:\(answerId)"
+        case .telling(let title, let text, _, _): return "telling:\(title):\(text.hashValue)"
         case .failed(let text): return "failed:\(text)"
         case .note: return "note"
         }
@@ -50,11 +50,11 @@ struct ReaderView: View {
         if let message = engine.message { return .message(message) }
         if let prompt = engine.uiState.session?.pendingPrompt, Settings.askAboutFigures { return .prompt(prompt) }
         switch engine.interjectionState {
-        case .answered(let question, let answer, _, let answerId):
-            return .answered(question: question, answer: answer, answerId: answerId)
+        case .answered(let question, let answer, _, let answerId, let done):
+            return .answered(question: question, answer: answer, answerId: answerId, done: done)
         // Something longer Albert's reading out, on screen too. Short replies need no dialog.
-        case .telling(let title, let text, _, let figureId) where title != ReadingEngine.shortReply:
-            return .telling(title: title, text: text, figureId: figureId)
+        case .telling(let title, let text, _, let figureId, _, let done) where title != ReadingEngine.shortReply:
+            return .telling(title: title, text: text, figureId: figureId, done: done)
         case .failed(let problem):
             return .failed(problem)
         default:
@@ -165,19 +165,25 @@ struct ReaderView: View {
             }
         case .prompt(let prompt):
             promptSheet(prompt)
-        case .answered(let question, let answer, let answerId):
+        case .answered(let question, let answer, let answerId, let done):
             DialogCard(title: "Q: \(question)") {
-                ScrollView { Text(answer).frame(maxWidth: .infinity, alignment: .leading) }
+                ScrollView {
+                    VStack(spacing: 12) {
+                        Text(answer).frame(maxWidth: .infinity, alignment: .leading)
+                        if done { waitingHint(followUp: true) }
+                    }
+                }
             } buttons: {
                 Button("Follow up") { withMic { voice.askFollowUp(answerId) } }.buttonStyle(.bordered)
                 Button("Done") { engine.dismissInterjection() }.buttonStyle(.borderedProminent)
             }
-        case .telling(let title, let text, let figureId):
+        case .telling(let title, let text, let figureId, let done):
             DialogCard(title: title) {
                 ScrollView {
                     VStack(spacing: 12) {
                         if let figureId { FigureImage(paperId: paperId, figureId: figureId, label: title, maxHeight: 280) }
                         Text(text).frame(maxWidth: .infinity, alignment: .leading)
+                        if done { waitingHint(followUp: false) }
                     }
                 }
             } buttons: {
@@ -192,6 +198,23 @@ struct ReaderView: View {
         case .note:
             noteSheet
         }
+    }
+
+    /// Under an answer, recap or summary that's been read out: how to carry on, since narration
+    /// waits to be told.
+    private func waitingHint(followUp: Bool) -> some View {
+        let text: String
+        switch (voice.handsFree, followUp) {
+        case (true, true):
+            text = "Done answering, waiting on your next instruction. Say \"Hey Albert, continue\" to keep reading the paper, or \"Hey Albert\" and a follow-up question."
+        case (true, false):
+            text = "Waiting on your next instruction. Say \"Hey Albert, continue\" to keep reading the paper."
+        case (false, true):
+            text = "Done answering. Tap Done to keep reading the paper, or Follow up to ask more."
+        case (false, false):
+            text = "Tap Done to keep reading the paper."
+        }
+        return Text(text).font(.footnote).foregroundStyle(Color.accentColor).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The figure/table/equation itself sits between the question and the Yes/No buttons, capped in
@@ -372,10 +395,13 @@ private struct ReaderContent: View {
     private var listeningLine: some View {
         if engine.interjectionState == .listening {
             Spacer().frame(height: 16)
-            if case .hearing(let words) = voice.state, !words.isEmpty {
+            if case .hearing(let words, _) = voice.state, !words.isEmpty {
                 Text("\"\(words)\"")
             } else {
                 Text("Listening... go ahead, or tap Stop when done")
+            }
+            if case .hearing(_, let hint?) = voice.state {
+                Text(hint).font(.footnote).foregroundStyle(Color.accentColor)
             }
         } else if engine.interjectionState == .thinking {
             Spacer().frame(height: 16)

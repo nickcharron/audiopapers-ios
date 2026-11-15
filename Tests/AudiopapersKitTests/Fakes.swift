@@ -111,6 +111,7 @@ final class FakeListener: SpeechListening {
     private(set) var listens: [ListenMode] = []
     private(set) var cancelled = 0
     private(set) var stopped = 0
+    private(set) var keptUntilOver = 0
     private var onText: ((String?) -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onSayAgain: (() -> Void)?
@@ -122,6 +123,8 @@ final class FakeListener: SpeechListening {
         mode: ListenMode,
         terms: [String],
         fromWake: Bool,
+        untilOver: Bool,
+        onPause: ((String) -> Void)?,
         onPartial: @escaping (String) -> Void,
         onText: @escaping (String?) -> Void,
         onFailure: @escaping (String) -> Void,
@@ -135,6 +138,8 @@ final class FakeListener: SpeechListening {
     }
 
     func stop() { stopped += 1 }
+
+    func keepUntilOver() { keptUntilOver += 1 }
 
     func cancel() {
         cancelled += 1
@@ -184,6 +189,7 @@ final class FakeEarcons: EarconPlayer {
     func listening() { played.append("listening") }
     func done() { played.append("done") }
     func working() { played.append("working") }
+    func stillListening() { played.append("stillListening") }
 }
 
 /// Audio delivered when a test says so.

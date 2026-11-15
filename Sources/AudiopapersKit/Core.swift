@@ -180,8 +180,9 @@ public enum Core {
 
     /// What something said to Albert asks for. Spends a Gemini request only if the fixed phrases
     /// don't cover it and there's a key.
-    public static func interpretCommand(_ paperId: String?, _ text: String, screen: String, answering: Bool) async throws -> VoiceCommand {
-        try await call("interpret_command", [dir, paperId, text, screen, answering, Settings.geminiKey, Settings.geminiRouterModel])
+    /// Without `useGemini`, only the fixed phrases: quick, and "unknown" if they don't cover it.
+    public static func interpretCommand(_ paperId: String?, _ text: String, screen: String, answering: Bool, useGemini: Bool = true) async throws -> VoiceCommand {
+        try await call("interpret_command", [dir, paperId, text, screen, answering, useGemini ? Settings.geminiKey : nil, Settings.geminiRouterModel])
     }
 
     public static func figureDescription(_ paperId: String, _ figureId: String) async throws -> FigureDescription {

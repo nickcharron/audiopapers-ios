@@ -151,6 +151,13 @@ public enum Settings {
         set { defaults.set(newValue, forKey: "hey_albert") }
     }
 
+    /// Whether questions and notes go on through pauses until "over" is said, rather than ending at
+    /// the first pause. Commands still end at a pause.
+    public static var sayOver: Bool {
+        get { flag("say_over", default: true) }
+        set { defaults.set(newValue, forKey: "say_over") }
+    }
+
     public static var wakeSensitivity: WakeSensitivity {
         get { text("wake_sensitivity").flatMap(WakeSensitivity.init) ?? .normal }
         set { defaults.set(newValue.rawValue, forKey: "wake_sensitivity") }

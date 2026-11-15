@@ -147,4 +147,5 @@ final class Earcons: EarconPlayer {
     func listening() { hub.playTone(hertz: [880], seconds: 0.12) }
     func done() { hub.playTone(hertz: [660, 880], seconds: 0.15) }
     func working() { hub.playTone(hertz: [520], seconds: 0.06) }
+    func stillListening() { hub.playTone(hertz: [880, 1100], seconds: 0.12) }
 }

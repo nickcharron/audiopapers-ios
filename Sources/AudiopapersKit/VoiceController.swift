@@ -5,6 +5,10 @@ import Observation
 // listening all night. It comes back when the app is next on screen.
 private let idleStopMs: Int64 = 30 * 60 * 1000
 private let workingSoundEveryMs: Int64 = 4_000
+// "Hey Albert" followed by nothing but these, then a pause, is still on its way to something.
+private let filler: Set<String> = ["um", "uh", "er", "erm", "hmm", "so", "okay", "ok", "well", "and", "alright", "actually", "like", "hey", "albert"]
+private let questionDoneHint = "Say \"over\" when you're done asking your question."
+private let noteDoneHint = "Say \"over\" when you're done with your note."
 
 /// What Albert is up to, for the screens to show.
 public enum VoiceState: Equatable, Sendable {
@@ -13,7 +17,8 @@ public enum VoiceState: Equatable, Sendable {
     /// Listening for "Hey Albert".
     case waiting
     /// Taking in what's being said; `words` is what the recognizer has made out so far.
-    case hearing(words: String)
+    /// `doneHint`, when it's listening until "over", says so.
+    case hearing(words: String, doneHint: String? = nil)
     /// Working out what it meant.
     case understanding
     /// Waiting on a spoken yes or no before doing something that can't be undone.
@@ -22,6 +27,11 @@ public enum VoiceState: Equatable, Sendable {
     public var isHearing: Bool {
         if case .hearing = self { return true }
         return false
+    }
+
+    var doneHint: String? {
+        if case .hearing(_, let hint) = self { return hint }
+        return nil
     }
 }
 
@@ -67,6 +77,8 @@ public protocol EarconPlayer: AnyObject {
     func done()
     /// "Still working on it."
     func working()
+    /// "Still listening: say over when you're done."
+    func stillListening()
 }
 
 /// Albert: takes "Hey Albert", the Albert button or a follow-up to an answer through to the command
@@ -103,6 +115,9 @@ public final class VoiceController {
     @ObservationIgnored private var onConfirmed: (@MainActor () async throws -> Void)?
     @ObservationIgnored private var idleTask: Task<Void, Never>?
     @ObservationIgnored private var pipeline: MicPipeline?
+    // A command turning into a question or a note, decided at a pause (see decideAtPause).
+    @ObservationIgnored private var pauseDecision: Task<Void, Never>?
+    @ObservationIgnored private var decidedAtPause: VoiceCommand?
 
     public init(
         engine: ReadingEngine,
@@ -130,7 +145,6 @@ public final class VoiceController {
             }
             syncListening()
         }
-        engine.onAnswerFinished = { [weak self] in self?.onAnswerFinished($0) ?? false }
         engine.onUnclearSpeech = { [weak self] in self?.onSpeechDuringPrompt($0) ?? false }
         engine.onPlayingChanged = { [weak self] playing in self?.playingChanged(playing) }
     }
@@ -261,12 +275,17 @@ public final class VoiceController {
     }
 
     private func listenForCommand(_ mode: ListenMode, fromWake: Bool = false) {
+        pauseDecision?.cancel()
+        decidedAtPause = nil
         state = .hearing(words: "")
         speechInput.listen(
             mode: mode,
             terms: engine.speechTerms(),
             fromWake: fromWake,
-            onPartial: { [weak self] in self?.state = .hearing(words: $0) },
+            untilOver: false,
+            // A question or a note can only be about the paper that's open.
+            onPause: Settings.sayOver && engine.paperId != nil ? { [weak self] in self?.decideAtPause($0) } : nil,
+            onPartial: { [weak self] in self?.hearing($0) },
             onText: { [weak self] in self?.onHeard($0) },
             onFailure: { [weak self] problem in
                 self?.settle()
@@ -283,10 +302,66 @@ public final class VoiceController {
     }
 
     private func settle() {
+        pauseDecision?.cancel()
         state = handsFree ? .waiting : .off
     }
 
+    private func hearing(_ words: String) {
+        state = .hearing(words: words, doneHint: state.doneHint)
+    }
+
+    /// A pause in a command. If it's turning into a question or a note, listening carries on until
+    /// "over"; anything else is finished. The fixed phrases are checked first, which is quick. If
+    /// they don't cover it, Gemini decides while listening carries on, as it would have been asked
+    /// anyway, and what it decides is kept for when the rest arrives.
+    private func decideAtPause(_ text: String) {
+        guard state.doneHint == nil, pauseDecision == nil else { return }
+        pauseDecision = Task { [weak self] in
+            guard let self else { return }
+            defer { if !Task.isCancelled { pauseDecision = nil } }
+            let paperId = engine.paperId
+            let answering = engine.followingUp
+            let quick = try? await Core.interpretCommand(paperId, text, screen: screen, answering: answering, useGemini: false)
+            guard !Task.isCancelled else { return }
+            switch quick?.action {
+            case "ask", "add_note":
+                keepUntilOver(quick?.action == "add_note" ? noteDoneHint : questionDoneHint)
+            case "unknown":
+                keepUntilOver(questionDoneHint)
+                guard let routed = try? await Core.interpretCommand(paperId, text, screen: screen, answering: answering),
+                      !Task.isCancelled, state.isHearing else { return }
+                switch routed.action {
+                case "ask": decidedAtPause = routed
+                case "add_note", "unknown": break
+                default:
+                    decidedAtPause = routed
+                    speechInput.stop()
+                }
+            case "cancel":
+                // Only "um" or the like so far: wait for the rest.
+                if !onlyFiller(text) { speechInput.stop() }
+            default:
+                speechInput.stop()
+            }
+        }
+    }
+
+    private func onlyFiller(_ text: String) -> Bool {
+        text.lowercased().split { !($0.isLetter || $0 == "'") }.allSatisfy { filler.contains(String($0)) }
+    }
+
+    private func keepUntilOver(_ hint: String) {
+        guard case .hearing(let words, nil) = state else { return }
+        speechInput.keepUntilOver()
+        earcons.stillListening()
+        state = .hearing(words: words, doneHint: hint)
+    }
+
     private func onHeard(_ text: String?) {
+        let decided = decidedAtPause
+        decidedAtPause = nil
+        pauseDecision?.cancel()
+        pauseDecision = nil
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             settle()
             engine.voiceCancelled()
@@ -298,7 +373,19 @@ public final class VoiceController {
         Task {
             let command: VoiceCommand
             do {
-                command = try await Core.interpretCommand(engine.paperId, text, screen: screen, answering: engine.followingUp)
+                switch decided?.action {
+                case nil:
+                    command = try await Core.interpretCommand(engine.paperId, text, screen: screen, answering: engine.followingUp)
+                case "ask":
+                    // Gemini said it's a question: the whole of it, now it's here, tidied by the fixed
+                    // phrases ("Hey Albert" off the front), which could still make it something else.
+                    let local = try await Core.interpretCommand(engine.paperId, text, screen: screen, answering: engine.followingUp, useGemini: false)
+                    var asked = decided!
+                    asked.text = local.text ?? text
+                    command = local.action == "unknown" ? asked : local
+                default:
+                    command = decided!
+                }
             } catch let error as CoreError {
                 settle()
                 say(error.friendlyMessage)
@@ -331,16 +418,6 @@ public final class VoiceController {
         return true
     }
 
-    /// After an answer's been read out, a moment to ask something else without saying "Hey Albert"
-    /// first. True if it took over from there.
-    private func onAnswerFinished(_ answerId: String) -> Bool {
-        guard handsFree else { return false }
-        engine.startFollowUp(answerId)
-        earcons.working()
-        listenForCommand(.followUp)
-        return true
-    }
-
     // MARK: - Things said on purpose, from buttons
 
     /// The Ask button: whatever's said next is a question, with no working out what it means.
@@ -361,12 +438,15 @@ public final class VoiceController {
     }
 
     private func hearQuestion() {
-        state = .hearing(words: "")
+        let untilOver = Settings.sayOver
+        state = .hearing(words: "", doneHint: untilOver ? questionDoneHint : nil)
         speechInput.listen(
             mode: .question,
             terms: engine.speechTerms(),
             fromWake: false,
-            onPartial: { [weak self] in self?.state = .hearing(words: $0) },
+            untilOver: untilOver,
+            onPause: nil,
+            onPartial: { [weak self] in self?.hearing($0) },
             onText: { [weak self] text in
                 guard let self else { return }
                 settle()
@@ -419,7 +499,13 @@ public final class VoiceController {
             earcons.done()
             engine.endVoice(play: true)
         case "stop":
-            if engine.wasSpeakingAside { engine.dismissInterjection() } else { engine.endVoice(play: false) }
+            if engine.wasWaitingAfterAside {
+                engine.endVoice(play: false)
+            } else if engine.wasSpeakingAside {
+                engine.dismissInterjection()
+            } else {
+                engine.endVoice(play: false)
+            }
         case "cancel":
             engine.voiceCancelled()
         case "next_paragraph", "previous_paragraph", "restart_paragraph", "next_section", "previous_section", "restart_section":
@@ -450,7 +536,7 @@ public final class VoiceController {
         case "where_am_i":
             say(try await Core.spokenPosition(paperId))
         case "recap":
-            think { [self] in tell("Recap", try await Core.recap(paperId)) }
+            think { [self] in tell("Recap", try await Core.recap(paperId), waits: true) }
         case "read_summary":
             try await readSummary(paperId)
         case "go_to_section":
@@ -535,8 +621,8 @@ public final class VoiceController {
         engine.tell(ReadingEngine.shortReply, text, voice: .phone, then: then)
     }
 
-    private func tell(_ title: String, _ text: String) {
-        engine.tell(title, text, voice: Voice.live())
+    private func tell(_ title: String, _ text: String, waits: Bool = false) {
+        engine.tell(title, text, voice: Voice.live(), waits: waits)
     }
 
     private func changeRate(_ rate: Float) {
@@ -573,15 +659,19 @@ public final class VoiceController {
     }
 
     private func takeNote(_ paperId: String, todo: Bool) {
-        say(todo ? "What's the to do?" : "Go ahead.") { [weak self] in
+        let untilOver = Settings.sayOver
+        let prompt = todo ? "What's the to do?" : "Go ahead."
+        say(untilOver ? "\(prompt) Say over when you're done." : prompt) { [weak self] in
             guard let self else { return }
             engine.listeningAgain()
-            state = .hearing(words: "")
+            state = .hearing(words: "", doneHint: untilOver ? noteDoneHint : nil)
             speechInput.listen(
                 mode: .dictation,
                 terms: engine.speechTerms(),
                 fromWake: false,
-                onPartial: { [weak self] in self?.state = .hearing(words: $0) },
+                untilOver: untilOver,
+                onPause: nil,
+                onPartial: { [weak self] in self?.hearing($0) },
                 onText: { [weak self] text in
                     guard let self else { return }
                     settle()
@@ -613,11 +703,11 @@ public final class VoiceController {
     /// The same words and voice as the summary screen's speaker button.
     private func readSummary(_ paperId: String) async throws {
         if let written = try await Core.getSummary(paperId) {
-            engine.tell("Summary", try await Core.summarySpeechText(written), voice: Voice.summary())
+            engine.tell("Summary", try await Core.summarySpeechText(written), voice: Voice.summary(), waits: true)
         } else {
             think { [self] in
                 let summary = try await Core.generateSummary(paperId)
-                engine.tell("Summary", try await Core.summarySpeechText(summary), voice: Voice.summary())
+                engine.tell("Summary", try await Core.summarySpeechText(summary), voice: Voice.summary(), waits: true)
             }
         }
     }

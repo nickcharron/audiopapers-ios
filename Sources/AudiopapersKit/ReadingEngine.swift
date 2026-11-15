@@ -18,11 +18,44 @@ public enum InterjectionState: Equatable, Sendable {
     case idle
     case listening
     case thinking
-    case answered(question: String, answer: String, audioId: String, answerId: String)
+    /// `done` once it's been read out: narration waits for the listener to say what's next.
+    case answered(question: String, answer: String, audioId: String, answerId: String, done: Bool = false)
     /// Albert saying something that isn't an answer: a recap, the listener's notes, a figure
-    /// described on request, a short reply to a command. `figureId` is the figure it's about.
-    case telling(title: String, text: String, audioId: String, figureId: String?)
+    /// described on request, a short reply to a command. `figureId` is the figure it's about. One
+    /// that `waits` is followed by waiting for the listener, as an answer is, and is `done` once
+    /// it's been read out.
+    case telling(title: String, text: String, audioId: String, figureId: String?, waits: Bool = false, done: Bool = false)
     case failed(String)
+
+    /// Read out, with narration waiting for the listener to say what's next.
+    public var waiting: Bool {
+        switch self {
+        case .answered(_, _, _, _, let done), .telling(_, _, _, _, _, let done): return done
+        default: return false
+        }
+    }
+
+    /// The same, read out from the top again.
+    var notDone: InterjectionState {
+        switch self {
+        case .answered(let question, let answer, let audioId, let answerId, _):
+            return .answered(question: question, answer: answer, audioId: audioId, answerId: answerId)
+        case .telling(let title, let text, let audioId, let figureId, let waits, _):
+            return .telling(title: title, text: text, audioId: audioId, figureId: figureId, waits: waits)
+        default: return self
+        }
+    }
+
+    /// The same, having been read out.
+    var finished: InterjectionState {
+        switch self {
+        case .answered(let question, let answer, let audioId, let answerId, _):
+            return .answered(question: question, answer: answer, audioId: audioId, answerId: answerId, done: true)
+        case .telling(let title, let text, let audioId, let figureId, let waits, _):
+            return .telling(title: title, text: text, audioId: audioId, figureId: figureId, waits: waits, done: true)
+        default: return self
+        }
+    }
 }
 
 /// Reading the summary aloud: nothing yet, its audio being rendered, or loaded in the player.
@@ -82,6 +115,9 @@ private let sectionGapMs: Int64 = 2_000
 private let maxSpokenAsks = 3
 private let summaryAudioId = "summary"
 private let sayPrefix = "say_"
+// Said after an answer, a recap or the summary, which narration then waits on.
+private let doneAnswering = "Done answering. Waiting for your next instruction."
+private let doneTelling = "Done. Waiting for your next instruction."
 private let maxSpeechTerms = 60
 private let leadingNumber = try! NSRegularExpression(pattern: "^[0-9IVXLCDM.]+[.):\\s]+")
 
@@ -117,9 +153,6 @@ public final class ReadingEngine {
 
     /// Told when a paper opens (with its id) or closes (with nil); see VoiceController.
     @ObservationIgnored public var onSessionChanged: ((String?) -> Void)?
-    /// Given an answer that's just finished being read out; true if it's taken care of what
-    /// happens next, which is otherwise going back to the narration.
-    @ObservationIgnored public var onAnswerFinished: ((_ answerId: String) -> Bool)?
     /// Given what was said to a describe prompt when it wasn't yes or no; true if it's been taken
     /// care of, otherwise the prompt is asked again.
     @ObservationIgnored public var onUnclearSpeech: ((String) -> Bool)?
@@ -351,6 +384,10 @@ public final class ReadingEngine {
     }
 
     public func togglePlayPause() {
+        if isWaitingAfterAside {
+            dismissInterjection()
+            return
+        }
         if player.isPlaying {
             holdPlayback()
         } else {
@@ -470,7 +507,7 @@ public final class ReadingEngine {
         case .idle:
             followUpOf = nil
             rememberPlace()
-        case .answered(_, _, _, let answerId):
+        case .answered(_, _, _, let answerId, _):
             interruptedAside = current
             followUpOf = answerId
             holdPlayback()
@@ -496,6 +533,7 @@ public final class ReadingEngine {
         }
         interruptedAside = nil
         interjectionState = aside
+        if aside.waiting { return } // back to waiting, without saying so again
         autoPlay = true
         if player.state == .ended && !renderingParts { finishAside() } else { player.play() }
     }
@@ -520,6 +558,13 @@ public final class ReadingEngine {
 
     /// Whether a voice command interrupted an answer or other aside being read out.
     public var wasSpeakingAside: Bool { interruptedAside != nil }
+
+    /// Whether a voice command came while waiting after an answer or other aside.
+    public var wasWaitingAfterAside: Bool { interruptedAside?.waiting == true }
+
+    /// Whether an answer or other aside has been read out and narration is waiting to be told to
+    /// carry on.
+    public var isWaitingAfterAside: Bool { interjectionState.waiting }
 
     /// Carries on listening after Albert has asked for something.
     public func listeningAgain() {
@@ -570,7 +615,7 @@ public final class ReadingEngine {
     public func repeatAside() -> Bool {
         guard let aside = interruptedAside else { return false }
         interruptedAside = nil
-        interjectionState = aside
+        interjectionState = aside.notDone
         autoPlay = true
         player.seek(index: 0, positionMs: 0)
         player.play()
@@ -636,7 +681,7 @@ public final class ReadingEngine {
             followUpOf = nil
             let audioId = "answer_\(result.answerId)"
             interjectionState = .answered(question: result.question, answer: result.answer, audioId: audioId, answerId: result.answerId)
-            speak(audioId, result.answer, title: "Answer: \(result.question)", voice: Voice.live())
+            speak(audioId, "\(result.answer)\n\n\(doneAnswering)", title: "Answer: \(result.question)", voice: Voice.live())
         }
     }
 
@@ -661,32 +706,50 @@ public final class ReadingEngine {
         if announceProblems { speak(sayAudioId(problem), problem, title: ReadingEngine.shortReply, voice: .phone) }
     }
 
-    /// Says something on top of wherever narration was, which carries on afterwards as it would
-    /// after an answer; `then` runs instead, if given. Works with no paper open, too.
-    public func tell(_ title: String, _ text: String, voice: Voice, audioId: String? = nil, figureId: String? = nil, then: (() -> Void)? = nil) {
+    /// Says something on top of wherever narration was, which carries on afterwards; `then` runs
+    /// instead, if given. With `waits`, narration waits afterwards instead, as it does after an
+    /// answer. Works with no paper open, too.
+    public func tell(
+        _ title: String,
+        _ text: String,
+        voice: Voice,
+        audioId: String? = nil,
+        figureId: String? = nil,
+        waits: Bool = false,
+        then: (() -> Void)? = nil
+    ) {
         if interjectionState == .idle {
             followUpOf = nil
             stopAsking()
             rememberPlace()
         }
-        let audioId = audioId ?? sayAudioId(text)
+        let spoken = waits ? "\(text)\n\n\(doneTelling)" : text
+        let audioId = audioId ?? sayAudioId(spoken)
         interruptedAside = nil
         afterTelling = then
-        interjectionState = .telling(title: title, text: text, audioId: audioId, figureId: figureId)
-        speak(audioId, text, title: title, voice: voice)
+        interjectionState = .telling(title: title, text: text, audioId: audioId, figureId: figureId, waits: waits)
+        speak(audioId, spoken, title: title, voice: voice)
     }
 
     private func sayAudioId(_ text: String) -> String { sayPrefix + stableHash(text) }
 
     /// An answer or other aside is over, or couldn't be read out: on to whatever comes next.
+    /// After an answer, a recap or the summary, that's waiting for the listener to say.
     private func finishAside() {
-        switch interjectionState {
-        case .answered(_, _, _, let answerId):
-            if onAnswerFinished?(answerId) != true { dismissInterjection() }
-        case .telling:
+        let current = interjectionState
+        switch current {
+        case .answered(_, _, _, _, let done):
+            if !done { interjectionState = current.finished }
+        case .telling(_, _, _, _, let waits, let done):
             let then = afterTelling
             afterTelling = nil
-            if let then { then() } else { dismissInterjection() }
+            if let then {
+                then()
+            } else if waits {
+                if !done { interjectionState = current.finished }
+            } else {
+                dismissInterjection()
+            }
         case .failed:
             dismissInterjection()
         default:
