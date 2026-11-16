@@ -55,6 +55,9 @@ public final class SpeechEndpointer {
     /// How loud it's been between words, to start the next one from.
     public var floorDb: Float { noiseFloor }
 
+    /// In the middle of some speech: it's started, and the pause that ends it hasn't come yet.
+    public var speaking: Bool { heardSpeech && !ended }
+
     private let noSpeechFrames: Int
     private let endSilenceFrames: Int
     private let maxFrames: Int

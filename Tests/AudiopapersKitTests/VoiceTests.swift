@@ -379,6 +379,43 @@ final class SpeechInputTests: XCTestCase {
         XCTAssertEqual(texts, ["what does figure three"])
         XCTAssertTrue(recognizer.sessions[1].cancelled)
     }
+
+    func testWhatsSaidBetweenSessionsGoesToTheNextOne() async throws {
+        listenUntilOver()
+        mic.deliver(quiet())
+        recognizer.onFinal?("what does the")
+        // Said once that session had finished, before the next one started.
+        mic.deliver(loud())
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        XCTAssertEqual(recognizer.sessions[0].audio, quiet())
+        XCTAssertEqual(recognizer.sessions[1].audio, loud())
+        mic.deliver(quiet())
+        XCTAssertEqual(recognizer.sessions[1].audio, loud() + quiet())
+    }
+
+    func testTheRecognizerStoppingWhileStillTalkingIsntAPause() async throws {
+        var asked: [String] = []
+        listenUntilOver { asked.append($0) }
+        for _ in 0..<3 { mic.deliver(quiet()) }
+        for _ in 0..<5 { mic.deliver(loud()) }
+        recognizer.onFinal?("what does the")
+        XCTAssertEqual(asked, [])
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        for _ in 0..<5 { mic.deliver(loud()) }
+        // A question's pause is 1.5 s, 19 frames.
+        for _ in 0..<25 { mic.deliver(quiet()) }
+        try await eventually("the pause") { asked == ["what does the"] }
+    }
+
+    func testWhatTheRecognizerHeardBeforeTheMicCountsWhenTheMicHearsNothing() async throws {
+        listen()
+        // All said in what came before listening began, so the mic only hears quiet after it.
+        recognizer.onPartial?("next section")
+        for _ in 0..<60 { mic.deliver(quiet()) }
+        try await eventually("it to finish") { recognizer.sessions[0].ended }
+        recognizer.onFinal?("next section")
+        XCTAssertEqual(texts, ["next section"])
+    }
 }
 
 @MainActor
@@ -731,6 +768,47 @@ final class VoiceControllerTests: XCTestCase {
         try await eventually("it to wait again") { engine.isWaitingAfterAside }
         XCTAssertEqual(phone.rendered.count, spoken)
         XCTAssertFalse(player.isPlaying)
+    }
+
+    func testWithOverOnHeyAlbertThenAPauseThenContinueCarriesOnReading() async throws {
+        Settings.sayOver = true
+        _ = try await openPaper()
+        engine.tell("Recap", "So far, residual networks.", voice: .phone, waits: true)
+        try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
+        player.finishItem()
+        try await eventually("it to wait") { engine.isWaitingAfterAside }
+        // The recognizer stops after the wake words, then hears the rest in its next session.
+        try await say("hey Albert")
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        XCTAssertTrue(voice.state.isHearing)
+        recognizer.onFinal?("continue")
+        try await eventually("narration back") { player.currentId == "seg_0_0" && player.isPlaying }
+        XCTAssertEqual(engine.interjectionState, .idle)
+    }
+
+    func testWithOverOnAQuestionStartingWithWhatWaitsAtThePause() async throws {
+        Settings.sayOver = true
+        _ = try await openPaper()
+        try await say("what")
+        try await eventually("a new session") { recognizer.sessions.count == 2 }
+        XCTAssertNil(voice.state.doneHint)
+        recognizer.onFinal?("is the main contribution")
+        try await eventually("it to wait for over") { voice.state.doneHint != nil }
+        XCTAssertEqual(voice.state.doneHint, "Say \"over\" when you're done asking your question.")
+    }
+
+    func testWithOverOnSayingOnlyOverGoesBackToWaitingForHeyAlbert() async throws {
+        Settings.sayOver = true
+        _ = try await openPaper()
+        engine.tell("Recap", "So far, residual networks.", voice: .phone, waits: true)
+        try await eventually("Albert to speak") { player.currentId?.hasPrefix("say_") == true }
+        player.finishItem()
+        try await eventually("it to wait") { engine.isWaitingAfterAside }
+        // Taken for the start of a question at the pause, but it's also the end of one.
+        try await say("over")
+        try await eventually("Hey Albert to work again") { voice.state == .waiting }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(voice.state, .waiting)
     }
 }
 

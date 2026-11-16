@@ -4,6 +4,7 @@ private let frameMs: Int64 = 80
 private let finishWaitMs: Int64 = 6_000
 private let failuresToGiveUp = 3
 private let maxCapturedSamples = micSampleRate * 30
+private let maxBetweenSamples = micSampleRate * 10
 // A question or note waiting on its "over" (see listen's untilOver) ends anyway after this much
 // quiet, so forgetting to say it never leaves the mic open.
 private let overBackstopMs: Int64 = 20_000
@@ -143,6 +144,9 @@ public final class SpeechInput: SpeechListening {
         private(set) var endpointer: SpeechEndpointer?
         let capturedLock = NSLock()
         var captured: [Int16] = []
+        // From the mic while no session is taking it (one has finished its stretch of speech and
+        // the next hasn't started), for the next one to begin with, so nothing said then is lost.
+        var between: [Int16] = []
         var streaming = false
         var streamedBefore = false
         var usedPipeline: MicPipeline?
@@ -189,9 +193,24 @@ public final class SpeechInput: SpeechListening {
 
         func feed(endpointer: SpeechEndpointer?) { feed(session: session, endpointer: endpointer) }
 
+        /// Feeds `session` from now on, starting with what the mic heard while no session was taking
+        /// it. Returns how many samples that was.
+        func start(session: RecognitionSession, endpointer: SpeechEndpointer?) -> Int {
+            capturedLock.lock()
+            let held = between
+            between = []
+            if !held.isEmpty { session.append(held) }
+            self.session = session
+            self.endpointer = endpointer
+            capturedLock.unlock()
+            return held.count
+        }
+
+        /// For a new session: what it hears is all that a failure would hand on.
         func resetCaptured() {
             capturedLock.lock()
             captured = []
+            between = []
             capturedLock.unlock()
         }
     }
@@ -246,6 +265,7 @@ public final class SpeechInput: SpeechListening {
 
     public func stop() {
         guard let listen = active else { return }
+        if !listen.finishing { Log.d("Finishing listening") }
         listen.finishing = true
         listen.timeout?.cancel()
         listen.backstop?.cancel()
@@ -276,6 +296,7 @@ public final class SpeechInput: SpeechListening {
 
     public func keepUntilOver() {
         guard let listen = active, listen.pauses != .over, !listen.finishing else { return }
+        Log.d("Listening until \"over\"")
         listen.pauses = .over
         listen.timeout?.cancel()
         listen.timeout = after(maxMs(listen)) { [weak self] in
@@ -286,7 +307,8 @@ public final class SpeechInput: SpeechListening {
             stop()
         } else {
             armBackstop(listen, overBackstopMs)
-            if listen.sessionOpen { listen.feed(endpointer: freshEndpointer(listen)) }
+            // For "over"'s shorter pause.
+            if listen.endpointer?.speaking != true { listen.feed(endpointer: freshEndpointer(listen)) }
         }
     }
 
@@ -370,12 +392,11 @@ public final class SpeechInput: SpeechListening {
             return true
         }
         let pipeline = listen.usedPipeline ?? pipelineFor(listen)
-        // Once something's been said, a pause is all the next endpointer is for: the backstop sees
-        // to waiting for more.
-        let saidSomething = listen.endpointer?.heardSpeech == true || !listen.heard.isEmpty
+        // The first endpointer waits a while for speech to start. After that, each pause starts a
+        // new one (see carryOn), which a new session carries on with.
         let endpointer: SpeechEndpointer
-        if saidSomething {
-            endpointer = freshEndpointer(listen)
+        if let current = listen.endpointer {
+            endpointer = current
         } else {
             let times = listen.mode.times
             endpointer = SpeechEndpointer(
@@ -385,7 +406,8 @@ public final class SpeechInput: SpeechListening {
                 initialNoiseFloorDb: pipeline.quietLevelDb()
             )
         }
-        listen.feed(session: session, endpointer: endpointer)
+        let held = listen.start(session: session, endpointer: endpointer)
+        if held > 0 { Log.d("Starting the next session with \(held * 1000 / micSampleRate) ms said in between") }
         if !listen.streaming {
             listen.streaming = true
             listen.usedPipeline = pipeline
@@ -429,13 +451,17 @@ public final class SpeechInput: SpeechListening {
     /// On the mic's queue.
     private nonisolated func onMicFrame(_ listen: Listen, _ frame: [Int16]) {
         listen.capturedLock.lock()
-        let session = listen.session
         let endpointer = listen.endpointer
         if listen.captured.count < maxCapturedSamples { listen.captured.append(contentsOf: frame) }
+        // Under the lock, so what's held between sessions can't pass anything newer (see Listen.start).
+        if let session = listen.session {
+            session.append(frame)
+        } else if listen.between.count < maxBetweenSamples {
+            listen.between.append(contentsOf: frame)
+        }
         // A pre-roll arrives as one long array, which isn't a frame's worth of loudness.
         let event = frame.count == micFrameSamples ? endpointer?.feed(frame) : nil
         listen.capturedLock.unlock()
-        session?.append(frame)
         switch event {
         case .speechStarted?:
             Task { @MainActor [weak self] in if self?.active === listen { self?.resumed(listen) } }
@@ -457,6 +483,7 @@ public final class SpeechInput: SpeechListening {
     /// the endpointer heard enough quiet.
     private func paused(_ listen: Listen, sessionEnded: Bool) {
         let soFar = listen.soFar()
+        Log.d("A pause (\(listen.pauses), found by the \(sessionEnded ? "recognizer" : "endpointer")) after \"\(soFar)\"")
         switch listen.pauses {
         case .end:
             if sessionEnded { deliver(listen) } else { stop() }
@@ -476,10 +503,15 @@ public final class SpeechInput: SpeechListening {
             listen.paused = true
             armBackstop(listen, backstopMs)
         }
-        guard sessionEnded else {
-            listen.feed(endpointer: freshEndpointer(listen))
-            return
-        }
+        // The next pause is a new endpointer's to find. It starts now rather than with the next
+        // session, so it hears anything said in between.
+        if listen.endpointer?.speaking != true { listen.feed(endpointer: freshEndpointer(listen)) }
+        if sessionEnded { startSessionSoon(listen) }
+    }
+
+    /// The session's over: what the mic hears from now waits for the next one.
+    private func startSessionSoon(_ listen: Listen) {
+        listen.feed(session: nil, endpointer: listen.endpointer)
         listen.resetCaptured()
         Task { @MainActor [weak self] in
             guard let self, self.active === listen, !listen.finishing else { return }
@@ -491,6 +523,7 @@ public final class SpeechInput: SpeechListening {
         listen.backstop?.cancel()
         listen.backstop = after(milliseconds) { [weak self] in
             guard let self, self.active === listen, listen.pauses != .end else { return }
+            Log.d("Quiet since the pause, so that's all")
             self.stop()
         }
     }
@@ -503,11 +536,18 @@ public final class SpeechInput: SpeechListening {
     private func deliver(_ listen: Listen) {
         let soFar = listen.soFar()
         let text = listen.pauses == .over ? Over.strip(soFar) : soFar
+        Log.d("Heard \"\(text)\"")
         delivered(listen)
         listen.onText(text.isEmpty ? nil : text)
     }
 
     private func nothingSaid(_ listen: Listen) {
+        // Nothing new from the mic, but the recognizer had something, from the moment before
+        // listening began: "Hey Albert, next" said in one go.
+        if !listen.soFar().isEmpty {
+            stop()
+            return
+        }
         abandon(listen)
         listen.onText(nil)
     }
@@ -600,6 +640,7 @@ public final class SpeechInput: SpeechListening {
     private func handleFinal(_ listen: Listen, _ text: String?) {
         listen.sessionOpen = false
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        Log.d("The recognizer finished a stretch: \"\(trimmed)\"")
         if trimmed.isEmpty && heardSpeech(listen) {
             recognitionFailed(listen)
             return
@@ -608,6 +649,10 @@ public final class SpeechInput: SpeechListening {
         listen.partial = ""
         if listen.finishing || listen.pauses == .end {
             deliver(listen)
+        } else if listen.endpointer?.speaking == true {
+            // Still talking, as far as the endpointer can tell: the recognizer only stopped to write
+            // this much down, and the endpointer will say when the pause comes.
+            startSessionSoon(listen)
         } else {
             paused(listen, sessionEnded: true)
         }

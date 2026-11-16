@@ -7,6 +7,8 @@ private let idleStopMs: Int64 = 30 * 60 * 1000
 private let workingSoundEveryMs: Int64 = 4_000
 // "Hey Albert" followed by nothing but these, then a pause, is still on its way to something.
 private let filler: Set<String> = ["um", "uh", "er", "erm", "hmm", "so", "okay", "ok", "well", "and", "alright", "actually", "like", "hey", "albert"]
+// "What" with a pause after it could be "say that again", or the start of "what does figure 3 show".
+private let questionStarts: Set<String> = ["what", "what's", "what is", "what was"]
 private let questionDoneHint = "Say \"over\" when you're done asking your question."
 private let noteDoneHint = "Say \"over\" when you're done with your note."
 
@@ -323,6 +325,7 @@ public final class VoiceController {
             let answering = engine.followingUp
             let quick = try? await Core.interpretCommand(paperId, text, screen: screen, answering: answering, useGemini: false)
             guard !Task.isCancelled else { return }
+            Log.d("At a pause, \"\(text)\" is \(quick?.action ?? "nil")")
             switch quick?.action {
             case "ask", "add_note":
                 keepUntilOver(quick?.action == "add_note" ? noteDoneHint : questionDoneHint)
@@ -330,6 +333,7 @@ public final class VoiceController {
                 keepUntilOver(questionDoneHint)
                 guard let routed = try? await Core.interpretCommand(paperId, text, screen: screen, answering: answering),
                       !Task.isCancelled, state.isHearing else { return }
+                Log.d("Gemini says \"\(text)\" is \(routed.action)")
                 switch routed.action {
                 case "ask": decidedAtPause = routed
                 case "add_note", "unknown": break
@@ -340,19 +344,28 @@ public final class VoiceController {
             case "cancel":
                 // Only "um" or the like so far: wait for the rest.
                 if !onlyFiller(text) { speechInput.stop() }
+            case "repeat":
+                // Waited on like filler: if nothing more comes, it's "say that again" after all.
+                if !startsAQuestion(text) { speechInput.stop() }
             default:
                 speechInput.stop()
             }
         }
     }
 
-    private func onlyFiller(_ text: String) -> Bool {
-        text.lowercased().split { !($0.isLetter || $0 == "'") }.allSatisfy { filler.contains(String($0)) }
+    private func meaningfulWords(_ text: String) -> [String] {
+        text.lowercased().split { !($0.isLetter || $0 == "'") }.map(String.init).filter { !filler.contains($0) }
     }
+
+    private func onlyFiller(_ text: String) -> Bool { meaningfulWords(text).isEmpty }
+
+    private func startsAQuestion(_ text: String) -> Bool { questionStarts.contains(meaningfulWords(text).joined(separator: " ")) }
 
     private func keepUntilOver(_ hint: String) {
         guard case .hearing(let words, nil) = state else { return }
         speechInput.keepUntilOver()
+        // "Over" might have been said already, which finished listening just now.
+        guard state == .hearing(words: words, doneHint: nil) else { return }
         earcons.stillListening()
         state = .hearing(words: words, doneHint: hint)
     }
